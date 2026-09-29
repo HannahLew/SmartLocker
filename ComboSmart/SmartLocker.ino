@@ -54,6 +54,9 @@ const int MAX_PASSWORD_LENGTH = 5;
 // Setup
 void setup()
 {
+  // trick into think no password is saved
+  //EEPROMWrite(EEPROM_MARKER_ADDRESS, 0);
+  
   pinMode(ledPin, OUTPUT);
   pinMode(lockPin, INPUT_PULLUP);
 
