@@ -6,7 +6,7 @@ int lockPin = 2;
 // System states
 enum systemState
 {
-  sleep,
+  lockerIdle,
   enterPass,
   checkPass,
   unlocked,
@@ -14,7 +14,7 @@ enum systemState
   accessDenied
 };
 
-systemState current = sleep;
+systemState current = lockerIdle;
 
 
 // Password variables
@@ -51,12 +51,98 @@ const int EEPROM_PASSWORD_ADDRESS = 1;
 const int MAX_PASSWORD_LENGTH = 5;
 
 
+// Sleep mode
+volatile bool wakeFlag = false;
+
+
+// Wake when A0 changes
+ISR(PCINT1_vect)
+{
+  wakeFlag = true;
+}
+
+
+// Wake when the lock button is pressed
+ISR(INT0_vect)
+{
+  wakeFlag = true;
+}
+
+
+// Set up wake-up interrupts
+void setupWakeInterrupts()
+{
+  // Enable pin-change interrupt for A0 (PCINT8)
+  PCMSK1 |= (1 << PCINT8);
+  PCIFR |= (1 << PCIF1);
+  PCICR |= (1 << PCIE1);
+
+  // Configure D2 (INT0) to trigger on falling edge
+  EICRA = (EICRA & ~((1 << ISC01) | (1 << ISC00))) |
+          (1 << ISC01);
+
+  EIFR |= (1 << INTF0);
+  EIMSK |= (1 << INT0);
+}
+
+
+// Enter Power-down sleep
+void enterPowerDown()
+{
+  // Only sleep while locked and idle
+  if (!isLocked || current != lockerIdle)
+  {
+    return;
+  }
+
+  // Check whether a keypad key is already pressed
+  sensorValue = analogRead(sensorPin);
+
+  if (sensorValue >= 280 && sensorValue <= 820)
+  {
+    return;
+  }
+
+  // Disable ADC to reduce power
+  ADCSRA &= ~(1 << ADEN);
+
+  // Clear pending interrupt flags
+  PCIFR |= (1 << PCIF1);
+  EIFR |= (1 << INTF0);
+
+  // Select Power-down mode and enable sleep
+  SMCR = (1 << SM1) | (1 << SE);
+
+  // Enable interrupts and enter sleep
+  __asm__ __volatile__(
+    "sei" "\n\t"
+    "sleep" "\n\t"
+    "cli" "\n\t"
+    ::: "memory"
+  );
+
+  // Disable sleep after waking
+  SMCR &= ~(1 << SE);
+
+  // Re-enable ADC
+  ADCSRA |= (1 << ADEN);
+
+  // Enable interrupts again
+  sei();
+
+  // Check the keypad after waking
+  sensorValue = analogRead(sensorPin);
+
+  if (sensorValue >= 280 && sensorValue <= 820)
+  {
+    wakeFlag = true;
+  }
+}
+
+
 // Setup
 void setup()
 {
-  // trick into think no password is saved
-  //EEPROMWrite(EEPROM_MARKER_ADDRESS, 0);
-  
   pinMode(ledPin, OUTPUT);
   pinMode(lockPin, INPUT_PULLUP);
 
@@ -65,17 +151,19 @@ void setup()
   // Start Timer2
   setupTimer();
 
-  // Start Timer1 servo
+  // Start servo PWM
   setupServo();
 
   isLocked = true;
-  current = sleep;
+  current = lockerIdle;
 
   digitalWrite(ledPin, LOW);
 
   // Start servo in locked position
   lockServo();
 
+  // Set up sleep wake-up interrupts
+  setupWakeInterrupts();
 
   // Load password from EEPROM
   if (loadPassword())
@@ -88,7 +176,6 @@ void setup()
     Serial.println("Enter a new password.");
   }
 
-
   Serial.println("System started.");
   Serial.println("System LOCKED.");
   Serial.println("Press a keypad key to begin.");
@@ -98,11 +185,11 @@ void setup()
 // Main loop
 void loop()
 {
-  // update timer
+  // Update timer
   updateTimer();
 
 
-  // lock button
+  // Lock button
   if (digitalRead(lockPin) == LOW)
   {
     if (isLocked == false)
@@ -112,9 +199,15 @@ void loop()
   }
 
 
-  // sleep
-  if (current == sleep)
+  // Idle / sleep
+  if (current == lockerIdle)
   {
+    if (isLocked)
+    {
+      enterPowerDown();
+    }
+
+    // Check keypad after waking
     sensorValue = analogRead(sensorPin);
 
     if (sensorValue >= 280 && sensorValue <= 820)
@@ -137,91 +230,77 @@ void loop()
   }
 
 
-  // enter password
+  // Enter password
   else if (current == enterPass)
   {
     sensorValue = analogRead(sensorPin);
     keyvalue = 13;
 
-
-    // keypad
+    // Convert ADC reading to a key
     switch (sensorValue)
     {
-      //#
       case 280 ... 302:
-        keyvalue = 11;
+        keyvalue = 11;  // #
         break;
 
-      //0
       case 303 ... 322:
-        keyvalue = 0;
+        keyvalue = 0;   // 0
         break;
 
-      //*
       case 323 ... 368:
-        keyvalue = 12;
+        keyvalue = 12;  // *
         break;
 
-      //9
       case 369 ... 417:
-        keyvalue = 9;
+        keyvalue = 9;   // 9
         break;
 
-      //8
       case 418 ... 440:
-        keyvalue = 8;
+        keyvalue = 8;   // 8
         break;
 
-      //7
       case 441 ... 559:
-        keyvalue = 7;
+        keyvalue = 7;   // 7
         break;
 
-      //6
       case 560 ... 677:
-        keyvalue = 6;
+        keyvalue = 6;   // 6
         break;
 
-      //5
       case 678 ... 694:
-        keyvalue = 5;
+        keyvalue = 5;   // 5
         break;
 
-      //4
       case 695 ... 736:
-        keyvalue = 4;
+        keyvalue = 4;   // 4
         break;
 
-      //3
       case 737 ... 781:
-        keyvalue = 3;
+        keyvalue = 3;   // 3
         break;
 
-      //2
       case 782 ... 795:
-        keyvalue = 2;
+        keyvalue = 2;   // 2
         break;
 
-      //1
       case 796 ... 820:
-        keyvalue = 1;
+        keyvalue = 1;   // 1
         break;
 
       default:
-        keyvalue = 13;
+        keyvalue = 13;  // No key
         break;
     }
 
 
-    // key pressed
+    // Key pressed
     if (keyvalue < 13)
     {
-      // debounce key
+      // Debounce key
       if (timerCount - lastKeyTime >= keyDelay)
       {
         lastKeyTime = timerCount;
         lastActTime = timerCount;
-
 
         if (keyvalue == 11)
         {
@@ -236,12 +315,11 @@ void loop()
           lastKey = '0' + keyvalue;
         }
 
-
         Serial.print("Key pressed: ");
         Serial.println(lastKey);
 
 
-        // enter
+        // Enter key
         if (lastKey == '#')
         {
           // First password setup
@@ -269,7 +347,7 @@ void loop()
         }
 
 
-        // clear
+        // Clear password
         else if (lastKey == '*')
         {
           enteredPass = "";
@@ -278,7 +356,7 @@ void loop()
         }
 
 
-        // number
+        // Add a number
         else
         {
           if (enteredPass.length() < MAX_PASSWORD_LENGTH)
@@ -303,19 +381,19 @@ void loop()
     }
 
 
-    // timeout
+    // Inactivity timeout
     if (timerCount - lastActTime >= inactTimeout)
     {
       Serial.println("Inactivity timeout.");
 
       enteredPass = "";
 
-      current = sleep;
+      current = lockerIdle;
     }
   }
 
 
-  // check password
+  // Check password
   else if (current == checkPass)
   {
     Serial.println("Checking password.");
@@ -335,14 +413,15 @@ void loop()
   }
 
 
-  // unlocked
+  // Unlocked
   else if (current == unlocked)
   {
     isLocked = false;
 
     digitalWrite(ledPin, HIGH);
 
-    // Move servo to unlocked position
+    // Restart Timer1 PWM and move servo to unlocked position
+    setupServo();
     unlockServo();
 
     Serial.println("SYSTEM UNLOCKED");
@@ -355,32 +434,34 @@ void loop()
   }
 
 
-  // locked
+  // Locked
   else if (current == locked)
   {
     isLocked = true;
 
     digitalWrite(ledPin, LOW);
 
-    // Move servo to locked position
+    // Restart Timer1 PWM and move servo to locked position
+    setupServo();
     lockServo();
 
     enteredPass = "";
 
     Serial.println("SYSTEM LOCKED");
 
-    current = sleep;
+    current = lockerIdle;
   }
 
 
-  // access denied
+  // Access denied
   else if (current == accessDenied)
   {
     isLocked = true;
 
     digitalWrite(ledPin, LOW);
 
-    // Make sure servo stays locked
+    // Restart Timer1 PWM and keep servo locked
+    setupServo();
     lockServo();
 
     if (timerCount - lastErrorTime >= errorDelay)
